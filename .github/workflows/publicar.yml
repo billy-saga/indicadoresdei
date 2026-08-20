@@ -1,0 +1,82 @@
+# Robo de publicacao dos Indicadores DEI.
+#
+# Le o historico no Supabase e atualiza o dados.json deste repositorio, que e o
+# arquivo de onde o site publicado tira tudo o que mostra.
+#
+# Roda sozinho 1x por dia e tambem sob demanda: aba Actions -> "Run workflow".
+# Use o botao quando precisar de um mes no ar na hora, sem esperar o ciclo.
+#
+# NAO precisa de nenhum segredo. A chave abaixo e a publishable do Supabase, que
+# ja vai dentro do JavaScript do site neste mesmo repositorio publico. Ela so
+# permite LER: escrever nos indicadores exige estar na lista dei_admins.
+#
+# Este arquivo e mantido no repositorio privado indicadores-dei-app, em
+# deploy/workflows/, e copiado para ca pelo npm run publicar. Editar aqui direto
+# funciona, mas a proxima publicacao sobrescreve.
+
+name: Publicar indicadores DEI
+
+on:
+  schedule:
+    # 06:00 UTC = 03:00 em Sao Paulo
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publicar-dei
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Baixar o historico do Supabase
+        env:
+          SUPABASE_URL: https://baamubozrhmkryiwelyc.supabase.co
+          SUPABASE_KEY: sb_publishable_TlarIGD9n4OTWb-2z3wtkQ_qu3MrEJ-
+        run: |
+          curl -sS --fail --retry 3 --retry-delay 5 \
+            -H "apikey: $SUPABASE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_KEY" \
+            "$SUPABASE_URL/rest/v1/INDICADORES%20DEI?select=*&order=MES.desc" \
+            -o novo.json
+
+      - name: Conferir antes de aceitar
+        run: |
+          # Sem estas checagens, uma resposta vazia ou um erro em JSON publicariam
+          # um site sem dados por cima de um site que estava funcionando.
+          if ! jq -e 'type == "array" and length > 0' novo.json > /dev/null; then
+            echo "::error::A resposta nao e uma lista de meses. Nada foi publicado."
+            head -c 400 novo.json
+            exit 1
+          fi
+          MESES=$(jq 'length' novo.json)
+          COLUNAS=$(jq '.[0] | length' novo.json)
+          echo "Recebidos $MESES meses com $COLUNAS colunas."
+          if [ "$MESES" -lt 40 ] || [ "$COLUNAS" -lt 300 ]; then
+            echo "::error::Veio menos dado do que o esperado (>=40 meses, >=300 colunas)."
+            exit 1
+          fi
+
+      - name: Publicar se algo mudou
+        run: |
+          if [ -f dados.json ] && cmp -s novo.json dados.json; then
+            echo "Nada mudou desde a ultima publicacao. Site ja esta atualizado."
+            rm novo.json
+            exit 0
+          fi
+
+          mv novo.json dados.json
+          git config user.name  "Robo Indicadores DEI"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dados.json
+          git commit -m "Atualiza indicadores DEI ($(TZ=America/Sao_Paulo date '+%d/%m/%Y %H:%M'))"
+          git push
+          echo "### Publicado :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "https://billy-saga.github.io/indicadoresdei/" >> $GITHUB_STEP_SUMMARY
