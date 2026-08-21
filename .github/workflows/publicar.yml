@@ -40,11 +40,29 @@ jobs:
           SUPABASE_URL: https://baamubozrhmkryiwelyc.supabase.co
           SUPABASE_KEY: sb_publishable_TlarIGD9n4OTWb-2z3wtkQ_qu3MrEJ-
         run: |
-          curl -sS --fail --retry 3 --retry-delay 5 \
-            -H "apikey: $SUPABASE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_KEY" \
-            "$SUPABASE_URL/rest/v1/INDICADORES%20DEI?select=*&order=MES.desc" \
-            -o novo.json
+          pega() {
+            curl -sS --fail --retry 3 --retry-delay 5 \
+              -H "apikey: $SUPABASE_KEY" -H "Authorization: Bearer $SUPABASE_KEY" \
+              "$SUPABASE_URL/rest/v1/$1" -o "$2"
+          }
+          pega "INDICADORES%20DEI?select=*&order=MES.desc" indicadores.json
+          pega "metas_dei?select=mes,entidade,indicador,minimo,maximo" metas.json
+
+          # As metas viram colunas (GRUPOMULHERMINIMO etc.) dentro de cada mes, que
+          # e o formato que o dashboard le. Elas moram em tabela separada desde
+          # ago/2026, mas o site continua consumindo um arquivo so.
+          jq -c --slurpfile metas metas.json '
+            ($metas[0] | group_by(.mes) | map({key: .[0].mes, value: .}) | from_entries) as $m
+            | map(
+                . as $linha
+                | ($m[$linha.MES] // []) as $doMes
+                | reduce $doMes[] as $meta ($linha;
+                    .[$meta.entidade + $meta.indicador + "MINIMO"] = $meta.minimo
+                  | .[$meta.entidade + $meta.indicador + "MAXIMO"] = $meta.maximo)
+              )
+          ' indicadores.json > novo.json
+
+          echo "metas juntadas: $(jq 'length' metas.json)"
 
       - name: Conferir antes de aceitar
         run: |
